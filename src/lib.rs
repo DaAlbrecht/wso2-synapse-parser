@@ -1,3 +1,5 @@
+use anyhow::Result;
+use anyhow::{bail, Context};
 use std::io::BufRead;
 
 use xml::{
@@ -6,8 +8,6 @@ use xml::{
 };
 
 pub mod ast;
-
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 struct Parser<R: BufRead> {
     event_reader: EventReader<R>,
@@ -51,15 +51,12 @@ impl<R: BufRead> Parser<R> {
                 Some(XmlEvent::StartElement { name, .. }) if name.local_name == "inSequence" => {
                     self.parse_in_sequence()
                 }
-                Some(XmlEvent::StartElement { .. }) => self.parse_mediator(),
                 _ => {
-                    return Result::Err("error".into());
+                    bail!("error");
                 }
             };
-            if node.is_ok() {
-                ast_nodes.push(node.unwrap());
-                println!("{:?}", ast_nodes);
-            }
+            println!("{:?}", node);
+            ast_nodes.push(node?);
         }
         Result::Ok(ast::Program { ast_nodes })
     }
@@ -67,6 +64,10 @@ impl<R: BufRead> Parser<R> {
     //--------------------------------------------------------------------------------//
 
     fn parse_in_sequence(&mut self) -> Result<ast::AstNode> {
+        let mut in_sequence = ast::InSequence {
+            mediators: Vec::new(),
+        };
+
         //current event is start element of inSequence walk to the next event (start element of mediator)
         self.current_event = self.event_reader.next().ok();
         while self.current_event
@@ -74,24 +75,22 @@ impl<R: BufRead> Parser<R> {
                 name: OwnedName::local("inSequence"),
             })
         {
-            self.parse_mediator();
-            self.current_event = self.event_reader.next().ok();
-        }
-
-        if self.current_event
-            != Some(XmlEvent::EndElement {
-                name: OwnedName::local("inSequence"),
-            })
-        {
-            return Result::Err("error".into());
+            let mediator = self.parse_mediator().context("error parsing mediator")?;
+            match mediator {
+                ast::AstNode::Mediator(mediator) => {
+                    in_sequence.mediators.push(mediator);
+                }
+                _ => {
+                    bail!("error parsing mediator");
+                }
+            }
         }
 
         self.current_event = self.event_reader.next().ok();
 
+        //return in_sequence as ast Sequence node
         Result::Ok(ast::AstNode::Sequence(ast::Sequences::InSequence(
-            ast::InSequence {
-                mediators: Vec::new(),
-            },
+            in_sequence,
         )))
     }
 
@@ -103,11 +102,18 @@ impl<R: BufRead> Parser<R> {
                 "log" => self.parse_log_mediator(),
                 "property" => self.parse_property(),
                 _ => {
-                    return Result::Err("error".into());
+                    bail!("not a supported mediator: element {}", name.local_name);
+                }
+            },
+            Some(XmlEvent::EndElement { name, .. }) => match name.local_name.as_str() {
+                "log" => self.parse_log_mediator(),
+                "property" => self.parse_property(),
+                _ => {
+                    bail!("not a supported mediator: element {}", name.local_name);
                 }
             },
             _ => {
-                return Result::Err("error".into());
+                bail!("not a supported mediator");
             }
         }
     }
@@ -125,7 +131,7 @@ impl<R: BufRead> Parser<R> {
                 }
             }
             _ => {
-                return Result::Err("error".into());
+                bail!("not log level specified");
             }
         }
 
@@ -149,19 +155,11 @@ impl<R: BufRead> Parser<R> {
                     log_mediator.properties.push(property);
                 }
                 _ => {
-                    return Result::Err("error".into());
+                    bail!("error parsing log mediator");
                 }
             }
             //skip the read property element
             self.current_event = self.event_reader.next().ok();
-        }
-        //error if current event is not end element of log mediator tag
-        if self.current_event
-            != Some(XmlEvent::EndElement {
-                name: OwnedName::local("log"),
-            })
-        {
-            return Result::Err("error".into());
         }
 
         self.current_event = self.event_reader.next().ok();
@@ -185,7 +183,7 @@ impl<R: BufRead> Parser<R> {
                 }
             }
             _ => {
-                return Result::Err("error".into());
+                bail!("error");
             }
         }
 
@@ -193,7 +191,7 @@ impl<R: BufRead> Parser<R> {
         self.current_event = self.event_reader.next().ok();
 
         Result::Ok(ast::AstNode::Mediator(ast::Mediators::Property(
-            ast::Property {
+            ast::PropertyMediator {
                 name: property_name,
                 value: property_value,
             },
@@ -212,64 +210,89 @@ mod tests {
             <log level="custom">
                 <property name="/validate" value="inSequence" />
             </log>
-            <class name="ch.integon.XfccMediator" />
             <log level="full" />
-            <call>
-              <endpoint>
-                  <http method="GET" uri-template="http://httpbin:80/get">
-                      <timeout>
-                          <duration>15000</duration>
-                          <responseAction>fault</responseAction>
-                      </timeout>
-                      <suspendOnFailure>
-                          <errorCodes>-1</errorCodes>
-                          <initialDuration>0</initialDuration>
-                          <progressionFactor>1.0</progressionFactor>
-                          <maximumDuration>0</maximumDuration>
-                      </suspendOnFailure>
-                      <markForSuspension>
-                          <errorCodes>-1</errorCodes>
-                      </markForSuspension>
-                  </http>
-              </endpoint>
-            </call>
-      <respond/>
       </inSequence>
-        "#;
-
-        let mut parser = Parser::new(input.as_bytes());
-        parser.parse_progarm();
-
-        assert!(false)
-    }
-
-    #[test]
-    fn test_log_mediator() {
-        let input = r#"
-        <log level="custom">
-            <property name="/validate" value="inSequence" />
-        </log>
         "#;
 
         let mut parser = Parser::new(input.as_bytes());
         let program = parser.parse_progarm();
 
         println!("{:?}", program);
+
         assert!(program.is_ok());
+
         let program = program.unwrap();
 
         println!("{:?}", program);
 
-        for statement in program.ast_nodes {
-            match statement {
-                ast::AstNode::Mediator(ast::Mediators::Log(log_mediator)) => {
-                    assert_eq!(log_mediator.level, "custom");
-                    assert_eq!(log_mediator.properties.len(), 1);
-                    assert_eq!(log_mediator.properties[0].name, "/validate");
-                    assert_eq!(log_mediator.properties[0].value, "inSequence");
+        assert_eq!(program.ast_nodes.len(), 1);
+    }
+
+    #[test]
+    fn test_log_mediator() {
+        let input = r#"
+        <inSequence>
+            <log level="custom">
+                <property name="/validate" value="inSequence" />
+            </log>
+            <log level="full" />
+            <log level="debug">
+                <property name="/validate" value="foobar" />
+            </log>
+        </inSequence>
+        "#;
+
+        let mut parser = Parser::new(input.as_bytes());
+        let program = parser.parse_progarm();
+
+        println!("{:?}", program);
+
+        assert!(program.is_ok());
+
+        let program = program.unwrap();
+
+        println!("{:?}", program);
+
+        assert_eq!(program.ast_nodes.len(), 1);
+
+        for ast_node in program.ast_nodes {
+            match ast_node {
+                ast::AstNode::Sequence(ast::Sequences::InSequence(in_sequence)) => {
+                    assert_eq!(in_sequence.mediators.len(), 3);
+                    match &in_sequence.mediators[0] {
+                        ast::Mediators::Log(log_mediator) => {
+                            assert_eq!(log_mediator.level, "custom");
+                            assert_eq!(log_mediator.properties.len(), 1);
+                            assert_eq!(log_mediator.properties[0].name, "/validate");
+                            assert_eq!(log_mediator.properties[0].value, "inSequence");
+                        }
+                        _ => {
+                            panic!("not a log mediator");
+                        }
+                    }
+                    match &in_sequence.mediators[1] {
+                        ast::Mediators::Log(log_mediator) => {
+                            assert_eq!(log_mediator.level, "full");
+                            assert_eq!(log_mediator.properties.len(), 0);
+                        }
+                        _ => {
+                            panic!("not a log mediator");
+                        }
+                    }
+                    match &in_sequence.mediators[2] {
+                        ast::Mediators::Log(log_mediator) => {
+                            assert_eq!(log_mediator.level, "debug");
+                            assert_eq!(log_mediator.properties.len(), 1);
+                            assert_eq!(log_mediator.properties[0].name, "/validate");
+                            assert_eq!(log_mediator.properties[0].value, "foobar");
+                        }
+                        _ => {
+                            panic!("not a log mediator");
+                        }
+                    }
                 }
                 _ => {
-                    assert!(false);
+                    panic!("not a in sequence");
                 }
             }
         }
@@ -330,4 +353,3 @@ mod tests {
 </api>
  *
 */
-

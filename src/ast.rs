@@ -20,7 +20,7 @@ pub enum Sequences {
 #[derive(Debug)]
 pub enum Mediators {
     Log(LogMediator),
-    Property(Property),
+    Property(PropertyMediator),
 }
 
 //--------------------------------------------------------------------------------//
@@ -32,11 +32,11 @@ pub struct InSequence {
 #[derive(Debug)]
 pub struct LogMediator {
     pub level: String,
-    pub properties: Vec<Property>,
+    pub properties: Vec<PropertyMediator>,
 }
 
 #[derive(Debug)]
-pub struct Property {
+pub struct PropertyMediator {
     pub name: String,
     pub value: String,
 }
@@ -92,7 +92,7 @@ impl Display for Mediators {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Mediators::Log(log_mediator) => write!(f, "{}", log_mediator),
-            Mediators::Property(property) => write!(f, "{}", property),
+            Mediators::Property(property_mediator) => write!(f, "{}", property_mediator),
         }
     }
 }
@@ -107,7 +107,7 @@ impl Display for LogMediator {
     }
 }
 
-impl Display for Property {
+impl Display for PropertyMediator {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
